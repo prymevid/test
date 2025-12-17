@@ -27,9 +27,9 @@ env:
   AUDIO_SAMPLE_RATE: "44100"
   AUDIO_CHANNELS: "2"
 
-# Trigger configuration
+# Trigger configuration - Now uses workflow_dispatch for manual triggering
 on:
-  repository_dispatch:
+  workflow_dispatch:  # Allows manual triggering via GitHub UI or API
 
 jobs:
   stream:
