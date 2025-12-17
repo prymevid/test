@@ -14,7 +14,7 @@ env:
   YOUTUBE_STREAM_KEY: "qa5q-hr1q-htsj-r7x6-3c05"        # YouTube stream key
   
   # Runtime configuration (in minutes)
-  MAX_RUNTIME: 3                    # Maximum runtime (5 hours = 300 minutes)
+  MAX_RUNTIME: 5                    # Maximum runtime (5 hours = 300 minutes)
   START_JITTER_MAX: 1                # Maximum start jitter in minutes (0-10)
   END_JITTER_MAX: 2                  # Maximum end jitter in minutes (0-10)
   
