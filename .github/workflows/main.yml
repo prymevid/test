@@ -5,7 +5,7 @@ env:
   # Video file configuration
   VIDEO_FILE_PREFIX: "k"              # Prefix for video files
   VIDEO_FILE_RANGE_START: 1           # Start of random range for video files
-  VIDEO_FILE_RANGE_END: 17           # End of random range for video files
+  VIDEO_FILE_RANGE_END: 17            # End of random range for video files
   VIDEO_FILE_EXTENSION: ".mp4"        # Extension for video files
   
   # Stream configuration
@@ -14,9 +14,9 @@ env:
   YOUTUBE_STREAM_KEY: "qa5q-hr1q-htsj-r7x6-3c05"        # YouTube stream key
   
   # Runtime configuration (in minutes)
-  MAX_RUNTIME: 5                    # Maximum runtime (5 hours = 300 minutes)
-  START_JITTER_MAX: 1                # Maximum start jitter in minutes (0-10)
-  END_JITTER_MAX: 2                  # Maximum end jitter in minutes (0-10)
+  BASE_RUNTIME: 2                     # Base runtime that will always run
+  START_JITTER_MAX: 1                 # Maximum ADDITIONAL random time before starting (0-1 minutes)
+  END_JITTER_MAX: 2                   # Maximum ADDITIONAL random time after base runtime (0-2 minutes)
   
   # FFmpeg settings
   VIDEO_CODEC: "libx264"
@@ -26,6 +26,9 @@ env:
   AUDIO_BITRATE: "96k"
   AUDIO_SAMPLE_RATE: "44100"
   AUDIO_CHANNELS: "2"
+  # Additional FFmpeg settings for better streaming
+  KEYFRAME_INTERVAL: 60              # Keyframe interval in seconds
+  BUFFER_SIZE: "2000k"                # Buffer size for stable streaming
 
 # Trigger configuration - Now uses workflow_dispatch for manual triggering
 on:
@@ -44,58 +47,89 @@ jobs:
 
       - name: Install FFmpeg
         run: |
+          echo "🔧 Installing FFmpeg..."
           sudo apt update
           sudo apt install ffmpeg -y
+          echo "✅ FFmpeg installation completed"
 
       - name: Generate random video file
         id: random-video
         run: |
+          echo "📹 Selecting a random video file..."
           # Generate a random number within the specified range
           RANDOM_NUM=$(( RANDOM % ($VIDEO_FILE_RANGE_END - $VIDEO_FILE_RANGE_START + 1) + $VIDEO_FILE_RANGE_START ))
           VIDEO_FILE="${VIDEO_FILE_PREFIX}${RANDOM_NUM}${VIDEO_FILE_EXTENSION}"
           echo "video-file=${VIDEO_FILE}" >> $GITHUB_OUTPUT
-          echo "Selected video file: ${VIDEO_FILE}"
+          echo "✅ Selected video file: ${VIDEO_FILE}"
 
       - name: Calculate runtime with jitter
         id: runtime
         run: |
-          # Calculate start jitter (0 to START_JITTER_MAX minutes)
+          echo "⏱️ Calculating stream runtime with jitter..."
+          echo "   Jitter is ADDITIONAL random time that will be added to the base runtime"
+          
+          # Calculate start jitter (randomly select 0 to START_JITTER_MAX minutes)
           START_JITTER=$(( RANDOM % ($START_JITTER_MAX + 1) ))
           echo "start-jitter=${START_JITTER}" >> $GITHUB_OUTPUT
           
-          # Calculate end jitter (0 to END_JITTER_MAX minutes)
+          # Calculate end jitter (randomly select 0 to END_JITTER_MAX minutes)
           END_JITTER=$(( RANDOM % ($END_JITTER_MAX + 1) ))
           echo "end-jitter=${END_JITTER}" >> $GITHUB_OUTPUT
           
-          # Calculate actual runtime
-          ACTUAL_RUNTIME=$(( $MAX_RUNTIME - $END_JITTER ))
-          echo "actual-runtime=${ACTUAL_RUNTIME}" >> $GITHUB_OUTPUT
+          # Calculate total runtime (BASE_RUNTIME + all jitter values)
+          # Jitter is ADDITIONAL time, so we ADD it to the base runtime
+          TOTAL_RUNTIME=$(( $BASE_RUNTIME + $START_JITTER + $END_JITTER ))
+          echo "total-runtime=${TOTAL_RUNTIME}" >> $GITHUB_OUTPUT
           
-          echo "Start jitter: ${START_JITTER} minutes"
-          echo "End jitter: ${END_JITTER} minutes"
-          echo "Actual runtime: ${ACTUAL_RUNTIME} minutes"
+          echo "📊 Runtime Calculation:"
+          echo "   Base runtime: ${BASE_RUNTIME} minutes (guaranteed)"
+          echo "   Start jitter: ${START_JITTER} minutes (ADDITIONAL random wait before starting)"
+          echo "   End jitter: ${END_JITTER} minutes (ADDITIONAL random time after base runtime)"
+          echo "   Total runtime: ${BASE_RUNTIME} + ${START_JITTER} + ${END_JITTER} = ${TOTAL_RUNTIME} minutes"
 
       - name: Wait for start jitter
         run: |
-          # Wait for the start jitter period
-          echo "Waiting for ${{ steps.runtime.outputs.start-jitter }} minutes before starting..."
+          echo "⏳ Waiting for ADDITIONAL ${START_JITTER} minutes before starting the stream..."
+          echo "   (This is the start jitter - random additional wait time)"
           sleep ${{ steps.runtime.outputs.start-jitter }}m
+          echo "✅ Initial wait completed, preparing to start stream"
 
       - name: Stream Cloudflare R2 video to YouTube
         run: |
-          # Set a timeout to ensure the stream doesn't run longer than expected
-          timeout ${{ steps.runtime.outputs.actual-runtime }}m ffmpeg -re -stream_loop -1 \
+          echo "🚀 Starting stream to YouTube..."
+          echo "📡 Stream URL: ${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}"
+          echo "📹 Video source: ${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}"
+          echo "⏱️ Stream will run for exactly ${{ steps.runtime.outputs.total-runtime }} minutes"
+          echo "   (This includes base runtime + all additional jitter time)"
+          echo "🎬 FFmpeg settings:"
+          echo "   Video codec: ${VIDEO_CODEC} (${VIDEO_PRESET})"
+          echo "   Video bitrate: ${VIDEO_BITRATE}"
+          echo "   Audio codec: ${AUDIO_CODEC} (${AUDIO_BITRATE})"
+          echo "   Keyframe interval: ${KEYFRAME_INTERVAL} seconds"
+          
+          # Stream with optimized settings for YouTube
+          timeout ${{ steps.runtime.outputs.total-runtime }}m ffmpeg -re -stream_loop -1 \
             -i "${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}" \
-            -c:v ${{ env.VIDEO_CODEC }} -preset ${{ env.VIDEO_PRESET }} \
-            -g 96 -keyint_min 96 \
-            -b:v ${{ env.VIDEO_BITRATE }} -maxrate ${{ env.VIDEO_BITRATE }} -bufsize ${{ env.VIDEO_BITRATE }} \
+            -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
+            -g ${KEYFRAME_INTERVAL} -keyint_min ${KEYFRAME_INTERVAL} -sc_threshold 0 \
+            -b:v ${VIDEO_BITRATE} -maxrate ${VIDEO_BITRATE} -bufsize ${BUFFER_SIZE} \
             -pix_fmt yuv420p -profile:v baseline -level 3.1 \
-            -c:a ${{ env.AUDIO_CODEC }} -ar ${{ env.AUDIO_SAMPLE_RATE }} -b:a ${{ env.AUDIO_BITRATE }} -ac ${{ env.AUDIO_CHANNELS }} \
-            -f flv "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" || \
-          echo "Stream completed or terminated after reaching the time limit"
+            -c:a ${AUDIO_CODEC} -ar ${AUDIO_SAMPLE_RATE} -b:a ${AUDIO_BITRATE} -ac ${AUDIO_CHANNELS} \
+            -f flv -flvflags no_duration_filesize \
+            "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" || \
+          echo "✅ Stream completed or terminated after reaching the time limit"
 
       - name: Notification on completion
         if: always()
         run: |
-          echo "Stream has ended safely."
-          echo "Total runtime was approximately ${{ steps.runtime.outputs.actual-runtime }} minutes."
+          echo "📢 Stream Status Notification:"
+          echo "   Status: ${{ job.status }}"
+          echo "   Total runtime was exactly ${{ steps.runtime.outputs.total-runtime }} minutes."
+          echo "   (Base: ${BASE_RUNTIME}min + Start jitter: ${{ steps.runtime.outputs.start-jitter }}min + End jitter: ${{ steps.runtime.outputs.end-jitter }}min)"
+          echo "   Video streamed: ${{ steps.random-video.outputs.video-file }}"
+          
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ Stream completed successfully!"
+          else
+            echo "❌ Stream encountered issues or was terminated unexpectedly."
+          fi
