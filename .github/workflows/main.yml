@@ -11,12 +11,15 @@ env:
   # Stream configuration
   CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/new/"  # Base URL for videos
   YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"  # Base RTMP URL for YouTube
-  YOUTUBE_STREAM_KEY: "qa5q-hr1q-htsj-r7x6-3c05"        # YouTube stream key
+  YOUTUBE_STREAM_KEY: "sdf6-cj08-0cbw-5xh4-8kus"        # YouTube stream key
   
   # Runtime configuration (in minutes)
-  BASE_RUNTIME: 2                     # Base runtime that will always run
-  START_JITTER_MAX: 1                 # Maximum ADDITIONAL random time before starting (0-1 minutes)
-  END_JITTER_MAX: 2                   # Maximum ADDITIONAL random time after base runtime (0-2 minutes)
+  BASE_RUNTIME: 150                     # Base runtime that will always run
+  START_JITTER_MAX: 10                 # Maximum ADDITIONAL random time before starting (0-1 minutes)
+  END_JITTER_MAX: 10                   # Maximum ADDITIONAL random time after base runtime (0-2 minutes)
+  
+  # YouTube preparation delay (in seconds)
+  YOUTUBE_PREP_DELAY: 10              # Delay to allow YouTube to prepare for a fresh stream
   
   # FFmpeg settings
   VIDEO_CODEC: "libx264"
@@ -66,40 +69,58 @@ jobs:
         id: runtime
         run: |
           echo "⏱️ Calculating stream runtime with jitter..."
-          echo "   Jitter is ADDITIONAL random time that will be added to the base runtime"
+          echo "   Jitter is ADDITIONAL random time (in seconds) that will be added to the base runtime"
           
-          # Calculate start jitter (randomly select 0 to START_JITTER_MAX minutes)
-          START_JITTER=$(( RANDOM % ($START_JITTER_MAX + 1) ))
-          echo "start-jitter=${START_JITTER}" >> $GITHUB_OUTPUT
+          # Convert max jitter from minutes to seconds
+          START_JITTER_MAX_SECONDS=$(( $START_JITTER_MAX * 60 ))
+          END_JITTER_MAX_SECONDS=$(( $END_JITTER_MAX * 60 ))
           
-          # Calculate end jitter (randomly select 0 to END_JITTER_MAX minutes)
-          END_JITTER=$(( RANDOM % ($END_JITTER_MAX + 1) ))
-          echo "end-jitter=${END_JITTER}" >> $GITHUB_OUTPUT
+          # Calculate start jitter in seconds (randomly select 0 to START_JITTER_MAX_SECONDS)
+          START_JITTER_SECONDS=$(( RANDOM % (START_JITTER_MAX_SECONDS + 1) ))
+          echo "start-jitter-seconds=${START_JITTER_SECONDS}" >> $GITHUB_OUTPUT
           
-          # Calculate total runtime (BASE_RUNTIME + all jitter values)
-          # Jitter is ADDITIONAL time, so we ADD it to the base runtime
-          TOTAL_RUNTIME=$(( $BASE_RUNTIME + $START_JITTER + $END_JITTER ))
-          echo "total-runtime=${TOTAL_RUNTIME}" >> $GITHUB_OUTPUT
+          # Calculate end jitter in seconds (randomly select 0 to END_JITTER_MAX_SECONDS)
+          END_JITTER_SECONDS=$(( RANDOM % (END_JITTER_MAX_SECONDS + 1) ))
+          echo "end-jitter-seconds=${END_JITTER_SECONDS}" >> $GITHUB_OUTPUT
+          
+          # Convert jitter seconds to minutes with decimal precision for calculation
+          START_JITTER_MINUTES=$(echo "scale=2; $START_JITTER_SECONDS / 60" | bc)
+          END_JITTER_MINUTES=$(echo "scale=2; $END_JITTER_SECONDS / 60" | bc)
+          
+          # Calculate total runtime in minutes (with decimal precision)
+          TOTAL_RUNTIME=$(echo "scale=2; $BASE_RUNTIME + $START_JITTER_MINUTES + $END_JITTER_MINUTES" | bc)
+          
+          # For timeout command, we need total seconds
+          TOTAL_RUNTIME_SECONDS=$(echo "($BASE_RUNTIME * 60) + $START_JITTER_SECONDS + $END_JITTER_SECONDS" | bc)
+          echo "total-runtime-seconds=${TOTAL_RUNTIME_SECONDS}" >> $GITHUB_OUTPUT
           
           echo "📊 Runtime Calculation:"
           echo "   Base runtime: ${BASE_RUNTIME} minutes (guaranteed)"
-          echo "   Start jitter: ${START_JITTER} minutes (ADDITIONAL random wait before starting)"
-          echo "   End jitter: ${END_JITTER} minutes (ADDITIONAL random time after base runtime)"
-          echo "   Total runtime: ${BASE_RUNTIME} + ${START_JITTER} + ${END_JITTER} = ${TOTAL_RUNTIME} minutes"
+          echo "   Start jitter: ${START_JITTER_SECONDS} seconds (${START_JITTER_MINUTES} minutes)"
+          echo "   End jitter: ${END_JITTER_SECONDS} seconds (${END_JITTER_MINUTES} minutes)"
+          echo "   Total runtime: ${TOTAL_RUNTIME} minutes (${TOTAL_RUNTIME_SECONDS} seconds)"
 
       - name: Wait for start jitter
         run: |
-          echo "⏳ Waiting for ADDITIONAL ${START_JITTER} minutes before starting the stream..."
-          echo "   (This is the start jitter - random additional wait time)"
-          sleep ${{ steps.runtime.outputs.start-jitter }}m
+          echo "⏳ Waiting for ADDITIONAL ${{ steps.runtime.outputs.start-jitter-seconds }} seconds before starting the stream..."
+          echo "   (This is the start jitter - random additional wait time in seconds)"
+          sleep ${{ steps.runtime.outputs.start-jitter-seconds }}
           echo "✅ Initial wait completed, preparing to start stream"
+
+      - name: Prepare YouTube for fresh stream
+        run: |
+          echo "🔄 Preparing YouTube for a fresh stream..."
+          echo "   Waiting ${YOUTUBE_PREP_DELAY} seconds for YouTube to be ready..."
+          echo "   This ensures any previous stream is fully terminated before starting a new one"
+          sleep ${YOUTUBE_PREP_DELAY}
+          echo "✅ YouTube preparation delay completed, ready to start streaming"
 
       - name: Stream Cloudflare R2 video to YouTube
         run: |
           echo "🚀 Starting stream to YouTube..."
           echo "📡 Stream URL: ${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}"
           echo "📹 Video source: ${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}"
-          echo "⏱️ Stream will run for exactly ${{ steps.runtime.outputs.total-runtime }} minutes"
+          echo "⏱️ Stream will run for exactly ${{ steps.runtime.outputs.total-runtime-seconds }} seconds"
           echo "   (This includes base runtime + all additional jitter time)"
           echo "🎬 FFmpeg settings:"
           echo "   Video codec: ${VIDEO_CODEC} (${VIDEO_PRESET})"
@@ -108,7 +129,7 @@ jobs:
           echo "   Keyframe interval: ${KEYFRAME_INTERVAL} seconds"
           
           # Stream with optimized settings for YouTube
-          timeout ${{ steps.runtime.outputs.total-runtime }}m ffmpeg -re -stream_loop -1 \
+          timeout ${{ steps.runtime.outputs.total-runtime-seconds }}s ffmpeg -re -stream_loop -1 \
             -i "${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}" \
             -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
             -g ${KEYFRAME_INTERVAL} -keyint_min ${KEYFRAME_INTERVAL} -sc_threshold 0 \
@@ -124,8 +145,8 @@ jobs:
         run: |
           echo "📢 Stream Status Notification:"
           echo "   Status: ${{ job.status }}"
-          echo "   Total runtime was exactly ${{ steps.runtime.outputs.total-runtime }} minutes."
-          echo "   (Base: ${BASE_RUNTIME}min + Start jitter: ${{ steps.runtime.outputs.start-jitter }}min + End jitter: ${{ steps.runtime.outputs.end-jitter }}min)"
+          echo "   Total runtime was exactly ${{ steps.runtime.outputs.total-runtime-seconds }} seconds."
+          echo "   (Base: $((BASE_RUNTIME * 60))s + Start jitter: ${{ steps.runtime.outputs.start-jitter-seconds }}s + End jitter: ${{ steps.runtime.outputs.end-jitter-seconds }}s)"
           echo "   Video streamed: ${{ steps.random-video.outputs.video-file }}"
           
           if [ "${{ job.status }}" = "success" ]; then
