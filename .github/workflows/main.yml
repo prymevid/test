@@ -1,0 +1,102 @@
+name: Stream Music Video to YouTube
+
+# CONFIGURATION SECTION - Modify these values as needed
+env:
+  # Video file configuration
+  VIDEO_FILE_PREFIX: "k"              # Prefix for video files
+  VIDEO_FILE_RANGE_START: 1           # Start of random range for video files
+  VIDEO_FILE_RANGE_END: 17           # End of random range for video files
+  VIDEO_FILE_EXTENSION: ".mp4"        # Extension for video files
+  
+  # Stream configuration
+  CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/new/"  # Base URL for videos
+  YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"  # Base RTMP URL for YouTube
+  YOUTUBE_STREAM_KEY: "qa5q-hr1q-htsj-r7x6-3c05"        # YouTube stream key
+  
+  # Runtime configuration (in minutes)
+  MAX_RUNTIME: 3                    # Maximum runtime (5 hours = 300 minutes)
+  START_JITTER_MAX: 1                # Maximum start jitter in minutes (0-10)
+  END_JITTER_MAX: 1                  # Maximum end jitter in minutes (0-10)
+  
+  # FFmpeg settings
+  VIDEO_CODEC: "libx264"
+  VIDEO_PRESET: "veryfast"
+  VIDEO_BITRATE: "1000k"
+  AUDIO_CODEC: "aac"
+  AUDIO_BITRATE: "96k"
+  AUDIO_SAMPLE_RATE: "44100"
+  AUDIO_CHANNELS: "2"
+
+# Trigger configuration
+on:
+  repository_dispatch:
+    types: [start-stream]  # Allow manual triggering via API
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: youtube-stream-group  # Ensures only one instance runs at a time
+      cancel-in-progress: true     # Cancel any in-progress workflows when a new one starts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt update
+          sudo apt install ffmpeg -y
+
+      - name: Generate random video file
+        id: random-video
+        run: |
+          # Generate a random number within the specified range
+          RANDOM_NUM=$(( RANDOM % ($VIDEO_FILE_RANGE_END - $VIDEO_FILE_RANGE_START + 1) + $VIDEO_FILE_RANGE_START ))
+          VIDEO_FILE="${VIDEO_FILE_PREFIX}${RANDOM_NUM}${VIDEO_FILE_EXTENSION}"
+          echo "video-file=${VIDEO_FILE}" >> $GITHUB_OUTPUT
+          echo "Selected video file: ${VIDEO_FILE}"
+
+      - name: Calculate runtime with jitter
+        id: runtime
+        run: |
+          # Calculate start jitter (0 to START_JITTER_MAX minutes)
+          START_JITTER=$(( RANDOM % ($START_JITTER_MAX + 1) ))
+          echo "start-jitter=${START_JITTER}" >> $GITHUB_OUTPUT
+          
+          # Calculate end jitter (0 to END_JITTER_MAX minutes)
+          END_JITTER=$(( RANDOM % ($END_JITTER_MAX + 1) ))
+          echo "end-jitter=${END_JITTER}" >> $GITHUB_OUTPUT
+          
+          # Calculate actual runtime
+          ACTUAL_RUNTIME=$(( $MAX_RUNTIME - $END_JITTER ))
+          echo "actual-runtime=${ACTUAL_RUNTIME}" >> $GITHUB_OUTPUT
+          
+          echo "Start jitter: ${START_JITTER} minutes"
+          echo "End jitter: ${END_JITTER} minutes"
+          echo "Actual runtime: ${ACTUAL_RUNTIME} minutes"
+
+      - name: Wait for start jitter
+        run: |
+          # Wait for the start jitter period
+          echo "Waiting for ${{ steps.runtime.outputs.start-jitter }} minutes before starting..."
+          sleep ${{ steps.runtime.outputs.start-jitter }}m
+
+      - name: Stream Cloudflare R2 video to YouTube
+        run: |
+          # Set a timeout to ensure the stream doesn't run longer than expected
+          timeout ${{ steps.runtime.outputs.actual-runtime }}m ffmpeg -re -stream_loop -1 \
+            -i "${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}" \
+            -c:v ${{ env.VIDEO_CODEC }} -preset ${{ env.VIDEO_PRESET }} \
+            -g 96 -keyint_min 96 \
+            -b:v ${{ env.VIDEO_BITRATE }} -maxrate ${{ env.VIDEO_BITRATE }} -bufsize ${{ env.VIDEO_BITRATE }} \
+            -pix_fmt yuv420p -profile:v baseline -level 3.1 \
+            -c:a ${{ env.AUDIO_CODEC }} -ar ${{ env.AUDIO_SAMPLE_RATE }} -b:a ${{ env.AUDIO_BITRATE }} -ac ${{ env.AUDIO_CHANNELS }} \
+            -f flv "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" || \
+          echo "Stream completed or terminated after reaching the time limit"
+
+      - name: Notification on completion
+        if: always()
+        run: |
+          echo "Stream has ended safely."
+          echo "Total runtime was approximately ${{ steps.runtime.outputs.actual-runtime }} minutes."
