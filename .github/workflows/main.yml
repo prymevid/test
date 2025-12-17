@@ -16,7 +16,7 @@ env:
   # Runtime configuration (in minutes)
   MAX_RUNTIME: 3                    # Maximum runtime (5 hours = 300 minutes)
   START_JITTER_MAX: 1                # Maximum start jitter in minutes (0-10)
-  END_JITTER_MAX: 1                  # Maximum end jitter in minutes (0-10)
+  END_JITTER_MAX: 2                  # Maximum end jitter in minutes (0-10)
   
   # FFmpeg settings
   VIDEO_CODEC: "libx264"
