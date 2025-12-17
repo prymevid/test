@@ -30,7 +30,6 @@ env:
 # Trigger configuration
 on:
   repository_dispatch:
-    types: [start-stream]  # Allow manual triggering via API
 
 jobs:
   stream:
