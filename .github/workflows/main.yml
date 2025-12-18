@@ -135,13 +135,13 @@ jobs:
           echo "   Audio codec: ${AUDIO_CODEC} (${AUDIO_BITRATE})"
           echo "   Keyframe interval: ${KEYFRAME_INTERVAL} seconds"
           
-          # Create a script to handle proper stream termination
-          cat > stream_with_termination.sh << 'EOF'
+          # Create a script to handle proper stream termination with all variables properly exported
+          cat > stream_with_termination.sh << EOF
           #!/bin/bash
           
           # Start FFmpeg in the background
           ffmpeg -re -stream_loop -1 \
-            -i "${CLOUDFLARE_R2_URL}${VIDEO_FILE}" \
+            -i "${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}" \
             -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
             -g ${KEYFRAME_INTERVAL} -keyint_min ${KEYFRAME_INTERVAL} -sc_threshold 0 \
             -b:v ${VIDEO_BITRATE} -maxrate ${VIDEO_BITRATE} -bufsize ${BUFFER_SIZE} \
@@ -150,7 +150,7 @@ jobs:
             -f flv -flvflags no_duration_filesize \
             "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" &
           
-          FFMPEG_PID=$!
+          FFMPEG_PID=\$!
           
           # Wait for the exact calculated runtime
           echo "⏱️ Streaming for ${{ steps.runtime.outputs.total-runtime-seconds }} seconds..."
@@ -158,15 +158,15 @@ jobs:
           
           # Send a graceful termination signal to FFmpeg
           echo "📡 Sending termination signal to FFmpeg..."
-          kill -SIGTERM $FFMPEG_PID
+          kill -SIGTERM \$FFMPEG_PID
           
           # Give FFmpeg time to send the termination signal to YouTube
           sleep 3
           
           # If FFmpeg is still running, force kill it
-          if kill -0 $FFMPEG_PID 2>/dev/null; then
+          if kill -0 \$FFMPEG_PID 2>/dev/null; then
             echo "🔧 FFmpeg didn't terminate gracefully, force killing..."
-            kill -SIGKILL $FFMPEG_PID
+            kill -SIGKILL \$FFMPEG_PID
           fi
           
           echo "✅ Stream terminated properly"
