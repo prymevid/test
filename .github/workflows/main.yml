@@ -94,11 +94,16 @@ jobs:
           TOTAL_RUNTIME_SECONDS=$(echo "($BASE_RUNTIME * 60) + $START_JITTER_SECONDS + $END_JITTER_SECONDS" | bc)
           echo "total-runtime-seconds=${TOTAL_RUNTIME_SECONDS}" >> $GITHUB_OUTPUT
           
+          # Calculate when to send the termination signal (5 seconds before the timeout)
+          TERMINATION_SIGNAL_TIME=$(echo "$TOTAL_RUNTIME_SECONDS - 5" | bc)
+          echo "termination-signal-time=${TERMINATION_SIGNAL_TIME}" >> $GITHUB_OUTPUT
+          
           echo "📊 Runtime Calculation:"
           echo "   Base runtime: ${BASE_RUNTIME} minutes (guaranteed)"
           echo "   Start jitter: ${START_JITTER_SECONDS} seconds (${START_JITTER_MINUTES} minutes)"
           echo "   End jitter: ${END_JITTER_SECONDS} seconds (${END_JITTER_MINUTES} minutes)"
           echo "   Total runtime: ${TOTAL_RUNTIME} minutes (${TOTAL_RUNTIME_SECONDS} seconds)"
+          echo "   Termination signal will be sent at: ${TERMINATION_SIGNAL_TIME} seconds"
 
       - name: Wait for start jitter
         run: |
@@ -128,16 +133,47 @@ jobs:
           echo "   Audio codec: ${AUDIO_CODEC} (${AUDIO_BITRATE})"
           echo "   Keyframe interval: ${KEYFRAME_INTERVAL} seconds"
           
-          # Stream with optimized settings for YouTube
-          timeout ${{ steps.runtime.outputs.total-runtime-seconds }}s ffmpeg -re -stream_loop -1 \
-            -i "${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}" \
+          # Create a script to handle proper stream termination
+          cat > stream_with_termination.sh << 'EOF'
+          #!/bin/bash
+          
+          # Start FFmpeg in the background
+          ffmpeg -re -stream_loop -1 \
+            -i "${CLOUDFLARE_R2_URL}${VIDEO_FILE}" \
             -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
             -g ${KEYFRAME_INTERVAL} -keyint_min ${KEYFRAME_INTERVAL} -sc_threshold 0 \
             -b:v ${VIDEO_BITRATE} -maxrate ${VIDEO_BITRATE} -bufsize ${BUFFER_SIZE} \
             -pix_fmt yuv420p -profile:v baseline -level 3.1 \
             -c:a ${AUDIO_CODEC} -ar ${AUDIO_SAMPLE_RATE} -b:a ${AUDIO_BITRATE} -ac ${AUDIO_CHANNELS} \
             -f flv -flvflags no_duration_filesize \
-            "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" || \
+            "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" &
+          
+          FFMPEG_PID=$!
+          
+          # Wait for the specified time before sending termination signal
+          sleep ${TERMINATION_SIGNAL_TIME}
+          
+          # Send a graceful termination signal to FFmpeg
+          echo "📡 Sending termination signal to FFmpeg..."
+          kill -SIGTERM $FFMPEG_PID
+          
+          # Give FFmpeg time to send the termination signal to YouTube
+          sleep 5
+          
+          # If FFmpeg is still running, force kill it
+          if kill -0 $FFMPEG_PID 2>/dev/null; then
+            echo "🔧 FFmpeg didn't terminate gracefully, force killing..."
+            kill -SIGKILL $FFMPEG_PID
+          fi
+          
+          echo "✅ Stream terminated properly"
+          EOF
+          
+          # Make the script executable
+          chmod +x stream_with_termination.sh
+          
+          # Run the script with a timeout as a safety net
+          timeout ${{ steps.runtime.outputs.total-runtime-seconds }}s ./stream_with_termination.sh || \
           echo "✅ Stream completed or terminated after reaching the time limit"
 
       - name: Notification on completion
