@@ -14,7 +14,7 @@ env:
   YOUTUBE_STREAM_KEY: "sdf6-cj08-0cbw-5xh4-8kus"        # YouTube stream key
   
   # Runtime configuration (in minutes)
-  BASE_RUNTIME: 150                     # Base runtime that will always run
+  BASE_RUNTIME: 1000                     # Base runtime that will always run
   START_JITTER_MAX: 2                 # Maximum ADDITIONAL random time before starting (0-1 minutes)
   END_JITTER_MAX: 10                   # Maximum ADDITIONAL random time after base runtime (0-2 minutes)
   
