@@ -10,7 +10,7 @@ env:
   # Stream configuration
   CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/new/"
   YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"
-  YOUTUBE_STREAM_KEY: "yyz1-w50g-u0gx-yufk-bt7b"
+  YOUTUBE_STREAM_KEY: "sdf6-cj08-0cbw-5xh4-8kus"
 
   # Runtime configuration (minutes)
   BASE_RUNTIME: 20000
