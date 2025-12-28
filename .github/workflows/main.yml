@@ -17,14 +17,14 @@ env:
   START_JITTER_MAX: 3
   END_JITTER_MAX: 10
 
-  # YouTube preparation delay
+  # YouTube preparation delay (seconds)
   YOUTUBE_PREP_DELAY: 10
 
-  # FFmpeg settings (YouTube-safe, automatic)
+  # FFmpeg settings (YouTube-safe)
   VIDEO_CODEC: "libx264"
   VIDEO_PRESET: "veryfast"
-  VIDEO_BITRATE: "1000k"
-  BUFFER_SIZE: "2000k"
+  VIDEO_BITRATE: "1500k"
+  BUFFER_SIZE: "3000k"
   AUDIO_CODEC: "aac"
   AUDIO_BITRATE: "96k"
   AUDIO_SAMPLE_RATE: "44100"
@@ -41,68 +41,107 @@ jobs:
       cancel-in-progress: true
 
     steps:
-      - name: Checkout repository
+      - name: 📥 Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install FFmpeg
+      - name: 🔧 Install FFmpeg
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
+          ffmpeg -version
 
-      - name: Select random video
+      - name: 🎲 Select random video
         id: random-video
         run: |
+          set -e
           RANDOM_NUM=$(( RANDOM % ($VIDEO_FILE_RANGE_END - $VIDEO_FILE_RANGE_START + 1) + $VIDEO_FILE_RANGE_START ))
-          echo "video-file=${VIDEO_FILE_PREFIX}${RANDOM_NUM}${VIDEO_FILE_EXTENSION}" >> $GITHUB_OUTPUT
+          VIDEO_FILE="${VIDEO_FILE_PREFIX}${RANDOM_NUM}${VIDEO_FILE_EXTENSION}"
+          echo "Selected video: $VIDEO_FILE"
+          echo "video-file=$VIDEO_FILE" >> $GITHUB_OUTPUT
 
-      - name: Calculate runtime
+      - name: ⏱️ Calculate runtime
         id: runtime
         run: |
+          set -e
           START_JITTER_SECONDS=$(( RANDOM % ($START_JITTER_MAX * 60 + 1) ))
           END_JITTER_SECONDS=$(( RANDOM % ($END_JITTER_MAX * 60 + 1) ))
           TOTAL_SECONDS=$(( BASE_RUNTIME * 60 + START_JITTER_SECONDS + END_JITTER_SECONDS ))
-          echo "start-jitter=${START_JITTER_SECONDS}" >> $GITHUB_OUTPUT
-          echo "total-runtime=${TOTAL_SECONDS}" >> $GITHUB_OUTPUT
-          echo "timeout=$((TOTAL_SECONDS + 3))" >> $GITHUB_OUTPUT
 
-      - name: Wait for start jitter
-        run: sleep ${{ steps.runtime.outputs.start-jitter }}
+          echo "Start jitter: $START_JITTER_SECONDS seconds"
+          echo "Total runtime: $TOTAL_SECONDS seconds"
 
-      - name: Prepare YouTube
-        run: sleep ${YOUTUBE_PREP_DELAY}
+          echo "start-jitter=$START_JITTER_SECONDS" >> $GITHUB_OUTPUT
+          echo "total-runtime=$TOTAL_SECONDS" >> $GITHUB_OUTPUT
 
-      - name: Stream to YouTube (AUTO + STABLE)
+      - name: ⏳ Wait for start jitter
+        run: |
+          echo "Waiting start jitter..."
+          sleep ${{ steps.runtime.outputs.start-jitter }}
+
+      - name: 🟡 Allow YouTube ingest preparation
+        run: |
+          echo "Preparing YouTube ingest..."
+          sleep ${YOUTUBE_PREP_DELAY}
+
+      - name: 🔴 Stream to YouTube (CLEAN & STABLE)
         run: |
           cat > stream.sh << 'EOF'
           #!/bin/bash
+          set -euo pipefail
+
+          log() {
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+          }
+
+          log "Starting FFmpeg stream"
 
           ffmpeg \
-            -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-            -re -stream_loop -1 \
+            -re \
+            -stream_loop -1 \
             -thread_queue_size 512 \
-            -i "${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}" \
+            -i "${CLOUDFLARE_R2_URL}${VIDEO_FILE}" \
             -r 30 -g 60 -keyint_min 60 -sc_threshold 0 \
             -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
             -b:v ${VIDEO_BITRATE} -maxrate ${VIDEO_BITRATE} -bufsize ${BUFFER_SIZE} \
             -pix_fmt yuv420p -profile:v high -level 4.2 \
-            -c:a ${AUDIO_CODEC} -b:a ${AUDIO_BITRATE} -ar ${AUDIO_SAMPLE_RATE} -ac ${AUDIO_CHANNELS} \
+            -c:a ${AUDIO_CODEC} -b:a ${AUDIO_BITRATE} \
+            -ar ${AUDIO_SAMPLE_RATE} -ac ${AUDIO_CHANNELS} \
             -af aresample=async=1 \
             -f flv -flvflags no_duration_filesize \
             "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" &
           
-          PID=$!
-          sleep ${{ steps.runtime.outputs.total-runtime }}
-          kill -SIGTERM $PID
-          sleep 3
-          kill -9 $PID 2>/dev/null || true
+          FFMPEG_PID=$!
+          log "FFmpeg started (PID=$FFMPEG_PID)"
+
+          sleep ${TOTAL_RUNTIME}
+
+          log "Stopping FFmpeg gracefully (SIGINT)"
+          kill -SIGINT $FFMPEG_PID
+
+          log "Waiting for FFmpeg to close RTMP connection"
+          wait $FFMPEG_PID || true
+
+          log "FFmpeg exited cleanly"
+
+          log "Cooldown to allow YouTube finalize stream"
+          sleep 15
+
+          log "Stream shutdown complete"
           EOF
 
           chmod +x stream.sh
-          timeout ${{ steps.runtime.outputs.timeout }}s ./stream.sh || true
 
-      - name: Done
+          export VIDEO_FILE="${{ steps.random-video.outputs.video-file }}"
+          export TOTAL_RUNTIME="${{ steps.runtime.outputs.total-runtime }}"
+
+          ./stream.sh
+
+      - name: ✅ Done
         if: always()
         run: |
-          echo "Stream finished"
+          echo "=================================="
+          echo "Stream finished successfully"
           echo "Video: ${{ steps.random-video.outputs.video-file }}"
           echo "Duration: ${{ steps.runtime.outputs.total-runtime }} seconds"
+          echo "RTMP disconnected cleanly"
+          echo "=================================="
