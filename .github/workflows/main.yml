@@ -10,7 +10,10 @@ env:
   # Stream configuration
   CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/new/"
   YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"
-  YOUTUBE_STREAM_KEY: "sdf6-cj08-0cbw-5xh4-8kus"
+  
+  # TWO YouTube stream keys - REPLACE THESE WITH YOUR ACTUAL KEYS
+  YOUTUBE_STREAM_KEY_A: "sdf6-cj08-0cbw-5xh4-8kus"  # Channel A
+  YOUTUBE_STREAM_KEY_B: "zhz6-63as-rd13-wd4b-8kvy"  # Channel B - REPLACE THIS!
 
   # Runtime configuration (minutes)
   BASE_RUNTIME: 20000
@@ -43,6 +46,47 @@ jobs:
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v3
+
+      - name: 🔄 Load last used key
+        id: load-key
+        uses: actions/download-artifact@v3
+        with:
+          name: last-stream-key
+          path: .github/
+        continue-on-error: true  # This allows first run when no artifact exists
+
+      - name: 🔑 Select which key to use (Auto-toggle A↔B)
+        id: select-key
+        run: |
+          # Check if we have a saved key file
+          if [ -f ".github/last_key.txt" ]; then
+            LAST_KEY=$(cat .github/last_key.txt)
+            echo "Last used key: $LAST_KEY"
+            
+            # Toggle to the other key
+            if [ "$LAST_KEY" = "KEY_A" ]; then
+              CURRENT_KEY="KEY_B"
+              YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_B"
+            else
+              CURRENT_KEY="KEY_A"
+              YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_A"
+            fi
+          else
+            # First run, start with KEY_A
+            CURRENT_KEY="KEY_A"
+            YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_A"
+          fi
+          
+          echo "Current key: $CURRENT_KEY"
+          echo "Using YouTube Stream Key: $YOUTUBE_STREAM_KEY"
+          
+          # Save current key for next run
+          mkdir -p .github
+          echo "$CURRENT_KEY" > .github/last_key.txt
+          
+          # Set outputs
+          echo "current-key=$CURRENT_KEY" >> $GITHUB_OUTPUT
+          echo "youtube-stream-key=$YOUTUBE_STREAM_KEY" >> $GITHUB_OUTPUT
 
       - name: 🔧 Install FFmpeg
         run: |
@@ -93,7 +137,7 @@ jobs:
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
           }
 
-          log "Starting FFmpeg stream"
+          log "Starting FFmpeg stream to $CURRENT_KEY channel"
 
           ffmpeg \
             -re \
@@ -133,8 +177,18 @@ jobs:
 
           export VIDEO_FILE="${{ steps.random-video.outputs.video-file }}"
           export TOTAL_RUNTIME="${{ steps.runtime.outputs.total-runtime }}"
+          export CURRENT_KEY="${{ steps.select-key.outputs.current-key }}"
+          export YOUTUBE_STREAM_KEY="${{ steps.select-key.outputs.youtube-stream-key }}"
 
           ./stream.sh
+
+      - name: 💾 Save key state for next run
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: last-stream-key
+          path: .github/last_key.txt
+          retention-days: 90
 
       - name: ✅ Done
         if: always()
@@ -143,5 +197,6 @@ jobs:
           echo "Stream finished successfully"
           echo "Video: ${{ steps.random-video.outputs.video-file }}"
           echo "Duration: ${{ steps.runtime.outputs.total-runtime }} seconds"
+          echo "Streamed to: ${{ steps.select-key.outputs.current-key }}"
           echo "RTMP disconnected cleanly"
           echo "=================================="
