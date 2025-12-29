@@ -13,7 +13,7 @@ env:
   
   # TWO YouTube stream keys - REPLACE THESE WITH YOUR ACTUAL KEYS
   YOUTUBE_STREAM_KEY_A: "sdf6-cj08-0cbw-5xh4-8kus"  # Channel A
-  YOUTUBE_STREAM_KEY_B: "zhz6-63as-rd13-wd4b-8kvy"  # Channel B - REPLACE THIS!
+  YOUTUBE_STREAM_KEY_B: "zhz6-63as-rd13-wd4b-8kvy"  # Channel B
 
   # Runtime configuration (minutes)
   BASE_RUNTIME: 20000
@@ -45,11 +45,11 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 🔄 Load last used key
         id: load-key
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: last-stream-key
           path: .github/
@@ -184,7 +184,7 @@ jobs:
 
       - name: 💾 Save key state for next run
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: last-stream-key
           path: .github/last_key.txt
