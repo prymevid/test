@@ -11,7 +11,7 @@ env:
   CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/new/"
   YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"
   
-  # TWO YouTube stream keys - REPLACE THESE WITH YOUR ACTUAL KEYS
+  # TWO YouTube stream keys
   YOUTUBE_STREAM_KEY_A: "sdf6-cj08-0cbw-5xh4-8kus"  # Channel A
   YOUTUBE_STREAM_KEY_B: "zhz6-63as-rd13-wd4b-8kvy"  # Channel B
 
@@ -46,21 +46,15 @@ jobs:
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
-
-      - name: 🔄 Load last used key
-        id: load-key
-        uses: actions/download-artifact@v4
         with:
-          name: last-stream-key
-          path: .github/
-        continue-on-error: true  # This allows first run when no artifact exists
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🔑 Select which key to use (Auto-toggle A↔B)
         id: select-key
         run: |
           # Check if we have a saved key file
-          if [ -f ".github/last_key.txt" ]; then
-            LAST_KEY=$(cat .github/last_key.txt)
+          if [ -f "last_stream_key.txt" ]; then
+            LAST_KEY=$(cat last_stream_key.txt)
             echo "Last used key: $LAST_KEY"
             
             # Toggle to the other key
@@ -81,8 +75,7 @@ jobs:
           echo "Using YouTube Stream Key: $YOUTUBE_STREAM_KEY"
           
           # Save current key for next run
-          mkdir -p .github
-          echo "$CURRENT_KEY" > .github/last_key.txt
+          echo "$CURRENT_KEY" > last_stream_key.txt
           
           # Set outputs
           echo "current-key=$CURRENT_KEY" >> $GITHUB_OUTPUT
@@ -182,13 +175,23 @@ jobs:
 
           ./stream.sh
 
-      - name: 💾 Save key state for next run
+      - name: 💾 Commit and push key state for next run
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: last-stream-key
-          path: .github/last_key.txt
-          retention-days: 90
+        run: |
+          # Configure git
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Check if file was modified
+          if git diff --quiet last_stream_key.txt; then
+            echo "No changes to last_stream_key.txt"
+          else
+            # Commit and push the changes
+            git add last_stream_key.txt
+            git commit -m "Update last used stream key to ${{ steps.select-key.outputs.current-key }}"
+            git push origin HEAD:${{ github.ref_name }}
+            echo "Successfully pushed updated key state to repository"
+          fi
 
       - name: ✅ Done
         if: always()
