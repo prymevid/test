@@ -12,8 +12,8 @@ env:
   YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"
   
   # TWO YouTube stream keys
-  YOUTUBE_STREAM_KEY_A: "sdf6-cj08-0cbw-5xh4-8kus"  # Channel A
-  YOUTUBE_STREAM_KEY_B: "zhz6-63as-rd13-wd4b-8kvy"  # Channel B
+  YOUTUBE_STREAM_KEY_A: "sdf6-cj08-0cbw-5xh4-8kus"
+  YOUTUBE_STREAM_KEY_B: "zhz6-63as-rd13-wd4b-8kvy"
 
   # Runtime configuration (minutes)
   BASE_RUNTIME: 20000
@@ -23,7 +23,7 @@ env:
   # YouTube preparation delay (seconds)
   YOUTUBE_PREP_DELAY: 10
 
-  # FFmpeg settings (YouTube-safe)
+  # FFmpeg settings
   VIDEO_CODEC: "libx264"
   VIDEO_PRESET: "veryfast"
   VIDEO_BITRATE: "1500k"
@@ -75,6 +75,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
+          ffmpeg -version
 
       - name: 🎲 Select random video
         id: random-video
@@ -89,15 +90,19 @@ jobs:
           START_JITTER_SECONDS=$(( RANDOM % ($START_JITTER_MAX * 60 + 1) ))
           END_JITTER_SECONDS=$(( RANDOM % ($END_JITTER_MAX * 60 + 1) ))
           TOTAL_SECONDS=$(( BASE_RUNTIME * 60 + START_JITTER_SECONDS + END_JITTER_SECONDS ))
+
+          echo "start-jitter=$START_JITTER_SECONDS" >> $GITHUB_OUTPUT
           echo "total-runtime=$TOTAL_SECONDS" >> $GITHUB_OUTPUT
 
       - name: ⏳ Wait for start jitter
-        run: sleep ${{ steps.runtime.outputs.start-jitter }}
+        run: |
+          sleep ${{ steps.runtime.outputs.start-jitter }}
 
       - name: 🟡 Allow YouTube ingest preparation
-        run: sleep ${YOUTUBE_PREP_DELAY}
+        run: |
+          sleep ${YOUTUBE_PREP_DELAY}
 
-      - name: 🔴 Stream to YouTube (MINIMAL FIX APPLIED)
+      - name: 🔴 Stream to YouTube (STABLE & SAFE)
         run: |
           cat > stream.sh << 'EOF'
           #!/bin/bash
@@ -111,11 +116,11 @@ jobs:
             -i "${CLOUDFLARE_R2_URL}${VIDEO_FILE}" \
             -r 30 -g 60 -keyint_min 60 -sc_threshold 0 \
             -force_key_frames "expr:gte(t,n_forced*2)" \
-            -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
-            -b:v ${VIDEO_BITRATE} -maxrate ${VIDEO_BITRATE} -bufsize ${BUFFER_SIZE} \
+            -c:v libx264 -preset veryfast \
+            -b:v 1500k -maxrate 1500k -bufsize 3000k \
             -pix_fmt yuv420p -profile:v high -level 4.2 \
-            -c:a ${AUDIO_CODEC} -b:a ${AUDIO_BITRATE} \
-            -ar ${AUDIO_SAMPLE_RATE} -ac ${AUDIO_CHANNELS} \
+            -c:a aac -b:a 96k \
+            -ar 44100 -ac 2 \
             -af aresample=async=1:first_pts=0 \
             -f flv \
             -flvflags no_duration_filesize \
@@ -150,4 +155,7 @@ jobs:
 
       - name: ✅ Done
         if: always()
-        run: echo "Stream finished"
+        run: |
+          echo "=================================="
+          echo "Stream finished successfully"
+          echo "=================================="
