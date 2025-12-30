@@ -53,13 +53,8 @@ jobs:
       - name: 🔑 Select which key to use (Auto-toggle A↔B)
         id: select-key
         run: |
-          # Check if we have a saved key file
           if [ -f "last_stream_key.txt" ]; then
-            echo "Found existing key file"
             LAST_KEY=$(cat last_stream_key.txt)
-            echo "Last used key: $LAST_KEY"
-            
-            # Toggle to the other key
             if [ "$LAST_KEY" = "KEY_A" ]; then
               CURRENT_KEY="KEY_B"
               YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_B"
@@ -68,181 +63,91 @@ jobs:
               YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_A"
             fi
           else
-            # First run - create file and start with KEY_A
-            echo "No key file found - first run"
             CURRENT_KEY="KEY_A"
             YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_A"
-            echo "$CURRENT_KEY" > last_stream_key.txt
-            echo "Created key file with: $CURRENT_KEY"
           fi
-          
-          echo "Current key: $CURRENT_KEY"
-          echo "Using YouTube Stream Key: $YOUTUBE_STREAM_KEY"
-          
-          # Set outputs
+
+          echo "$CURRENT_KEY" > last_stream_key.txt
           echo "current-key=$CURRENT_KEY" >> $GITHUB_OUTPUT
           echo "youtube-stream-key=$YOUTUBE_STREAM_KEY" >> $GITHUB_OUTPUT
-          
-          # Save current key to file (will be committed later)
-          echo "$CURRENT_KEY" > last_stream_key.txt
 
       - name: 🔧 Install FFmpeg
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
-          ffmpeg -version
 
       - name: 🎲 Select random video
         id: random-video
         run: |
-          set -e
           RANDOM_NUM=$(( RANDOM % ($VIDEO_FILE_RANGE_END - $VIDEO_FILE_RANGE_START + 1) + $VIDEO_FILE_RANGE_START ))
           VIDEO_FILE="${VIDEO_FILE_PREFIX}${RANDOM_NUM}${VIDEO_FILE_EXTENSION}"
-          echo "Selected video: $VIDEO_FILE"
           echo "video-file=$VIDEO_FILE" >> $GITHUB_OUTPUT
 
       - name: ⏱️ Calculate runtime
         id: runtime
         run: |
-          set -e
           START_JITTER_SECONDS=$(( RANDOM % ($START_JITTER_MAX * 60 + 1) ))
           END_JITTER_SECONDS=$(( RANDOM % ($END_JITTER_MAX * 60 + 1) ))
           TOTAL_SECONDS=$(( BASE_RUNTIME * 60 + START_JITTER_SECONDS + END_JITTER_SECONDS ))
-
-          echo "Start jitter: $START_JITTER_SECONDS seconds"
-          echo "Total runtime: $TOTAL_SECONDS seconds"
-
-          echo "start-jitter=$START_JITTER_SECONDS" >> $GITHUB_OUTPUT
           echo "total-runtime=$TOTAL_SECONDS" >> $GITHUB_OUTPUT
 
       - name: ⏳ Wait for start jitter
-        run: |
-          echo "Waiting start jitter..."
-          sleep ${{ steps.runtime.outputs.start-jitter }}
+        run: sleep ${{ steps.runtime.outputs.start-jitter }}
 
       - name: 🟡 Allow YouTube ingest preparation
-        run: |
-          echo "Preparing YouTube ingest..."
-          sleep ${YOUTUBE_PREP_DELAY}
+        run: sleep ${YOUTUBE_PREP_DELAY}
 
-      - name: 🔴 Stream to YouTube (CLEAN & STABLE)
+      - name: 🔴 Stream to YouTube (MINIMAL FIX APPLIED)
         run: |
           cat > stream.sh << 'EOF'
           #!/bin/bash
           set -euo pipefail
 
-          log() {
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-          }
-
-          # PHASE 1: INITIALIZE YOUTUBE STREAM ENDPOINT (2 minutes)
-          log "Phase 1: Initializing YouTube stream endpoint (120 seconds)..."
-          
-          timeout 130s ffmpeg \
-            -f lavfi -i "color=c=black:s=640x360:r=30" \
-            -f lavfi -i "sine=frequency=1" \
-            -c:v libx264 -preset ultrafast -b:v 500k \
-            -c:a aac -b:a 64k \
-            -f flv "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" \
-            > /dev/null 2>&1 &
-          
-          INIT_PID=$!
-          sleep 120
-          kill -9 $INIT_PID 2>/dev/null || true
-          wait $INIT_PID 2>/dev/null || true
-          
-          log "YouTube stream endpoint initialized"
-          sleep 5
-
-          # PHASE 2: MAIN STREAM
-          log "Phase 2: Starting main video stream..."
-
           ffmpeg \
             -re \
+            -fflags +genpts \
             -stream_loop -1 \
             -thread_queue_size 512 \
             -i "${CLOUDFLARE_R2_URL}${VIDEO_FILE}" \
             -r 30 -g 60 -keyint_min 60 -sc_threshold 0 \
+            -force_key_frames "expr:gte(t,n_forced*2)" \
             -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
             -b:v ${VIDEO_BITRATE} -maxrate ${VIDEO_BITRATE} -bufsize ${BUFFER_SIZE} \
             -pix_fmt yuv420p -profile:v high -level 4.2 \
             -c:a ${AUDIO_CODEC} -b:a ${AUDIO_BITRATE} \
             -ar ${AUDIO_SAMPLE_RATE} -ac ${AUDIO_CHANNELS} \
-            -af aresample=async=1 \
-            -f flv -flvflags no_duration_filesize \
+            -af aresample=async=1:first_pts=0 \
+            -f flv \
+            -flvflags no_duration_filesize \
+            -rtmp_live live \
+            -reconnect 1 \
+            -reconnect_streamed 1 \
+            -reconnect_delay_max 2 \
             "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" &
-          
+
           FFMPEG_PID=$!
-          log "FFmpeg started (PID=$FFMPEG_PID)"
-
-          # Stream for remaining time (subtract 125 seconds for initialization)
-          REMAINING_TIME=$((TOTAL_RUNTIME - 125))
-          if [ $REMAINING_TIME -gt 0 ]; then
-            sleep $REMAINING_TIME
-          fi
-
-          log "Stopping FFmpeg gracefully (SIGINT)"
+          sleep ${TOTAL_RUNTIME}
           kill -SIGINT $FFMPEG_PID
-
-          log "Waiting for FFmpeg to close RTMP connection"
           wait $FFMPEG_PID || true
-
-          log "FFmpeg exited cleanly"
-
-          log "Cooldown to allow YouTube finalize stream"
-          sleep 15
-
-          log "Stream shutdown complete"
           EOF
 
           chmod +x stream.sh
 
           export VIDEO_FILE="${{ steps.random-video.outputs.video-file }}"
           export TOTAL_RUNTIME="${{ steps.runtime.outputs.total-runtime }}"
-          export CURRENT_KEY="${{ steps.select-key.outputs.current-key }}"
           export YOUTUBE_STREAM_KEY="${{ steps.select-key.outputs.youtube-stream-key }}"
 
           ./stream.sh
 
-      - name: 💾 Commit and push key state for next run
+      - name: 💾 Commit and push key state
         if: always()
         run: |
-          # Configure git
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          
-          # Check status
-          echo "Current directory:"
-          pwd
-          ls -la
-          
-          echo "Content of last_stream_key.txt:"
-          cat last_stream_key.txt
-          
-          # Stage the file
           git add last_stream_key.txt
-          
-          # Check if there are changes to commit
-          if ! git diff --cached --quiet; then
-            echo "Committing changes to last_stream_key.txt"
-            git commit -m "Update last used stream key to ${{ steps.select-key.outputs.current-key }}"
-            
-            # Push changes
-            echo "Pushing to repository..."
-            git push origin HEAD:${{ github.ref_name }}
-            echo "Successfully pushed updated key state to repository"
-          else
-            echo "No changes to last_stream_key.txt - file already up to date"
-            echo "Current value: $(cat last_stream_key.txt)"
-          fi
+          git commit -m "Update last used stream key" || true
+          git push origin HEAD:${{ github.ref_name }} || true
 
       - name: ✅ Done
         if: always()
-        run: |
-          echo "=================================="
-          echo "Stream finished successfully"
-          echo "Video: ${{ steps.random-video.outputs.video-file }}"
-          echo "Duration: ${{ steps.runtime.outputs.total-runtime }} seconds"
-          echo "Streamed to: ${{ steps.select-key.outputs.current-key }}"
-          echo "RTMP disconnected cleanly"
-          echo "=================================="
+        run: echo "Stream finished"
