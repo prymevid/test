@@ -135,7 +135,27 @@ jobs:
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
           }
 
-          log "Starting FFmpeg stream to $CURRENT_KEY channel"
+          # PHASE 1: INITIALIZE YOUTUBE STREAM ENDPOINT (2 minutes)
+          log "Phase 1: Initializing YouTube stream endpoint (120 seconds)..."
+          
+          timeout 130s ffmpeg \
+            -f lavfi -i "color=c=black:s=640x360:r=30" \
+            -f lavfi -i "sine=frequency=1" \
+            -c:v libx264 -preset ultrafast -b:v 500k \
+            -c:a aac -b:a 64k \
+            -f flv "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" \
+            > /dev/null 2>&1 &
+          
+          INIT_PID=$!
+          sleep 120
+          kill -9 $INIT_PID 2>/dev/null || true
+          wait $INIT_PID 2>/dev/null || true
+          
+          log "YouTube stream endpoint initialized"
+          sleep 5
+
+          # PHASE 2: MAIN STREAM
+          log "Phase 2: Starting main video stream..."
 
           ffmpeg \
             -re \
@@ -155,7 +175,11 @@ jobs:
           FFMPEG_PID=$!
           log "FFmpeg started (PID=$FFMPEG_PID)"
 
-          sleep ${TOTAL_RUNTIME}
+          # Stream for remaining time (subtract 125 seconds for initialization)
+          REMAINING_TIME=$((TOTAL_RUNTIME - 125))
+          if [ $REMAINING_TIME -gt 0 ]; then
+            sleep $REMAINING_TIME
+          fi
 
           log "Stopping FFmpeg gracefully (SIGINT)"
           kill -SIGINT $FFMPEG_PID
