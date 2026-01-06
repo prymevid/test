@@ -15,13 +15,13 @@ env:
   YOUTUBE_STREAM_KEY_A: "sdf6-cj08-0cbw-5xh4-8kus"
   YOUTUBE_STREAM_KEY_B: "zhz6-63as-rd13-wd4b-8kvy"
 
-  # Runtime configuration (minutes)
-  BASE_RUNTIME: 20000
+  # Runtime configuration (minutes) - REDUCED from 20000
+  BASE_RUNTIME: 120  # 2 hours (adjust as needed)
   START_JITTER_MAX: 3
   END_JITTER_MAX: 10
 
-  # YouTube preparation delay (seconds)
-  YOUTUBE_PREP_DELAY: 10
+  # YouTube preparation delay (seconds) - INCREASED
+  YOUTUBE_PREP_DELAY: 60
 
   # FFmpeg settings
   VIDEO_CODEC: "libx264"
@@ -148,7 +148,7 @@ jobs:
           sleep ${YOUTUBE_PREP_DELAY}
           echo "✅ YouTube preparation delay complete"
 
-      - name: 🔴 Stream to YouTube (STABLE & SAFE)
+      - name: 🔴 Stream to YouTube (FIXED VERSION)
         run: |
           echo "========================================"
           echo "🔴 STREAMING TO YOUTUBE"
@@ -157,24 +157,37 @@ jobs:
           echo "📺 Video: ${{ steps.random-video.outputs.video-file }}"
           echo "🔑 Stream key: ${{ steps.select-key.outputs.current-key }}"
           echo "⏱️  Duration: ${{ steps.runtime.outputs.total-runtime }} seconds"
+          echo "🌐 Stream URL: ${YOUTUBE_RTMP_URL}********"
           
+          # Create streaming script
           cat > stream.sh << 'EOF'
           #!/bin/bash
           set -euo pipefail
-
-          ffmpeg \
+          
+          echo "🎬 Starting FFmpeg stream..."
+          
+          # Build FFmpeg command
+          FFMPEG_CMD="ffmpeg \
             -re \
-            -fflags +genpts \
+            -fflags +genpts+discardcorrupt \
             -stream_loop -1 \
-            -thread_queue_size 512 \
-            -i "${CLOUDFLARE_R2_URL}${VIDEO_FILE}" \
-            -r 30 -g 60 -keyint_min 60 -sc_threshold 0 \
-            -force_key_frames "expr:gte(t,n_forced*2)" \
-            -c:v libx264 -preset veryfast \
-            -b:v 1500k -maxrate 1500k -bufsize 3000k \
-            -pix_fmt yuv420p -profile:v high -level 4.2 \
-            -c:a aac -b:a 96k \
-            -ar 44100 -ac 2 \
+            -i \"${CLOUDFLARE_R2_URL}${VIDEO_FILE}\" \
+            -c:v ${{ env.VIDEO_CODEC }} \
+            -preset ${{ env.VIDEO_PRESET }} \
+            -b:v ${{ env.VIDEO_BITRATE }} \
+            -maxrate ${{ env.VIDEO_BITRATE }} \
+            -bufsize ${{ env.BUFFER_SIZE }} \
+            -r 30 \
+            -g 60 \
+            -keyint_min 60 \
+            -sc_threshold 0 \
+            -pix_fmt yuv420p \
+            -profile:v high \
+            -level 4.2 \
+            -c:a ${{ env.AUDIO_CODEC }} \
+            -b:a ${{ env.AUDIO_BITRATE }} \
+            -ar ${{ env.AUDIO_SAMPLE_RATE }} \
+            -ac ${{ env.AUDIO_CHANNELS }} \
             -af aresample=async=1:first_pts=0 \
             -f flv \
             -flvflags no_duration_filesize \
@@ -182,20 +195,47 @@ jobs:
             -reconnect 1 \
             -reconnect_streamed 1 \
             -reconnect_delay_max 2 \
-            "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" &
-
+            -reconnect_on_network_error 1 \
+            -reconnect_on_http_error 4xx,5xx \
+            \"${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}\""
+          
+          echo "📝 FFmpeg command prepared"
+          echo "🔄 Starting stream..."
+          
+          # Execute FFmpeg
+          eval $FFMPEG_CMD &
+          
           FFMPEG_PID=$!
+          echo "📊 FFmpeg PID: $FFMPEG_PID"
+          
+          # Wait for specified duration
+          echo "⏳ Streaming for ${TOTAL_RUNTIME} seconds..."
           sleep ${TOTAL_RUNTIME}
+          
+          # Graceful shutdown
+          echo "🛑 Stopping stream gracefully..."
           kill -SIGINT $FFMPEG_PID
+          
+          # Wait for FFmpeg to exit
           wait $FFMPEG_PID || true
+          
+          echo "✅ FFmpeg process stopped"
+          
+          # Allow YouTube to finalize
+          echo "⏳ Allowing YouTube to finalize ingest (30 seconds)..."
+          sleep 30
           EOF
 
           chmod +x stream.sh
 
+          # Export ALL required variables
           export VIDEO_FILE="${{ steps.random-video.outputs.video-file }}"
           export TOTAL_RUNTIME="${{ steps.runtime.outputs.total-runtime }}"
           export YOUTUBE_STREAM_KEY="${{ steps.select-key.outputs.youtube-stream-key }}"
+          export CLOUDFLARE_R2_URL="${{ env.CLOUDFLARE_R2_URL }}"
+          export YOUTUBE_RTMP_URL="${{ env.YOUTUBE_RTMP_URL }}"
 
+          # Execute stream
           ./stream.sh
           
           echo "✅ Stream completed successfully"
@@ -209,12 +249,12 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add last_stream_key.txt
-          git commit -m "Update last used stream key" || true
+          git commit -m "Update last used stream key" || echo "No changes to commit"
           echo "ℹ️  Pushing changes to repository..."
-          git push origin HEAD:${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }} || echo "Push failed or no changes"
           echo "✅ Key state committed and pushed"
 
-      - name: ✅ Done
+      - name: ✅ Final cleanup and summary
         if: always()
         run: |
           echo "========================================"
@@ -226,5 +266,5 @@ jobs:
           echo "   - Total runtime: ${{ steps.runtime.outputs.total-runtime }} seconds"
           echo "   - Next stream will use: $([ "${{ steps.select-key.outputs.current-key }}" = "KEY_A" ] && echo "KEY_B" || echo "KEY_A")"
           echo "========================================"
-          echo "✅ Stream finished successfully"
+          echo "✅ Stream workflow finished"
           echo "========================================"
